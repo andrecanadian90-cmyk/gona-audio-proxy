@@ -4,6 +4,10 @@
     {
       "src": "/api/clone",
       "dest": "/api/clone.js"
+    },
+    {
+      "src": "/api/grant",
+      "dest": "/api/grant.js"
     }
   ]
 }
