@@ -33,16 +33,6 @@ module.exports = async (req, res) => {
             headers['Cookie'] = cVal;
         }
 
-        const payloadRequests = JSON.stringify({
-            requests: [
-                {
-                    action: "GrantUse",
-                    subjectType: "Universe",
-                    subjectId: Number(universeId)
-                }
-            ]
-        });
-
         const targetUrl = `https://apis.roblox.com/asset-permissions-api/v1/assets/${assetId}/permissions`;
 
         // Step 1: Initial request to fetch Roblox X-CSRF-Token
@@ -50,39 +40,66 @@ module.exports = async (req, res) => {
         let initialRes = await fetch(targetUrl, {
             method: 'PATCH',
             headers: headers,
-            body: payloadRequests
+            body: JSON.stringify({ requests: [{ action: "GrantUse", subjectType: "Universe", subjectId: Number(universeId) }] })
         });
 
-        let csrfToken = initialRes.headers.get('x-csrf-token');
-
-        if (!csrfToken && initialRes.status === 403) {
-            // Also check casing variations if header getter didn't find it
-            csrfToken = initialRes.headers.get('X-CSRF-TOKEN') || initialRes.headers.get('X-Csrf-Token');
-        }
+        let csrfToken = initialRes.headers.get('x-csrf-token') || initialRes.headers.get('X-CSRF-TOKEN') || initialRes.headers.get('X-Csrf-Token');
 
         console.log('[GrantProxy] CSRF Token Fetched:', csrfToken ? 'YES (Valid)' : 'NO');
 
         if (csrfToken) {
             headers['x-csrf-token'] = csrfToken;
 
-            // Step 2: Re-send PATCH request with valid x-csrf-token
-            console.log('[GrantProxy] Step 2: Re-sending PATCH request with valid x-csrf-token...');
-            const grantRes = await fetch(targetUrl, {
+            // Format A: { requests: [...] }
+            console.log('[GrantProxy] Step 2A: Sending Format A { requests: [...] }');
+            let grantRes = await fetch(targetUrl, {
                 method: 'PATCH',
                 headers: headers,
-                body: payloadRequests
+                body: JSON.stringify({
+                    requests: [{ action: "GrantUse", subjectType: "Universe", subjectId: Number(universeId) }]
+                })
             });
 
-            const grantData = await grantRes.json().catch(() => ({}));
-
-            console.log('[GrantProxy] Grant Response Status:', grantRes.status, grantData);
+            let grantData = await grantRes.json().catch(() => ({}));
 
             if (grantRes.ok) {
-                console.log('[GrantProxy] ✅ UNIVERSE PERMISSION GRANTED SUCCESSFULLY!');
-                return res.status(200).json({ success: true, message: 'Universe Permission Granted Successfully!', data: grantData });
-            } else {
-                return res.status(grantRes.status).json({ error: grantData.message || 'Roblox Grant Failed', details: grantData });
+                console.log('[GrantProxy] ✅ UNIVERSE PERMISSION GRANTED VIA FORMAT A!', grantData);
+                return res.status(200).json({ success: true, format: 'A', data: grantData });
             }
+
+            // Format B: Array directly [{ action: "GrantUse", subjectType: "Universe", subjectId: Number(universeId) }]
+            console.log('[GrantProxy] Step 2B: Sending Format B Array [...]');
+            grantRes = await fetch(targetUrl, {
+                method: 'PATCH',
+                headers: headers,
+                body: JSON.stringify([
+                    { action: "GrantUse", subjectType: "Universe", subjectId: Number(universeId) }
+                ])
+            });
+
+            grantData = await grantRes.json().catch(() => ({}));
+
+            if (grantRes.ok) {
+                console.log('[GrantProxy] ✅ UNIVERSE PERMISSION GRANTED VIA FORMAT B!', grantData);
+                return res.status(200).json({ success: true, format: 'B', data: grantData });
+            }
+
+            // Format C: Single Object { action: "GrantUse", subjectType: "Universe", subjectId: Number(universeId) }
+            console.log('[GrantProxy] Step 2C: Sending Format C Single Object {...}');
+            grantRes = await fetch(targetUrl, {
+                method: 'PATCH',
+                headers: headers,
+                body: JSON.stringify({ action: "GrantUse", subjectType: "Universe", subjectId: Number(universeId) })
+            });
+
+            grantData = await grantRes.json().catch(() => ({}));
+
+            if (grantRes.ok) {
+                console.log('[GrantProxy] ✅ UNIVERSE PERMISSION GRANTED VIA FORMAT C!', grantData);
+                return res.status(200).json({ success: true, format: 'C', data: grantData });
+            }
+
+            return res.status(grantRes.status).json({ error: grantData.message || 'Roblox Grant Failed', details: grantData });
         } else {
             const initialData = await initialRes.json().catch(() => ({}));
             return res.status(initialRes.status).json({
