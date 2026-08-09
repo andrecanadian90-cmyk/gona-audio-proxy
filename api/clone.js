@@ -26,18 +26,47 @@ module.exports = async (req, res) => {
 
         console.log(`[Proxy] Processing Auto-Clone for Asset #${assetId} to Group #${groupId}...`);
 
-        // 1. Download stream audio from Roblox Asset Delivery CDN (using Cookie Auth if provided)
-        const cdnHeaders = {};
+        // 1. Download stream audio from Roblox Asset Delivery CDN (using Cookie Auth & Roblox User-Agent)
+        const cdnHeaders = {
+            'User-Agent': 'Roblox/WinInet'
+        };
+
         if (process.env.ROBLOX_COOKIE) {
-            cdnHeaders['Cookie'] = `.ROBLOSECURITY=${process.env.ROBLOX_COOKIE}`;
+            let cookieVal = process.env.ROBLOX_COOKIE.trim();
+            if (!cookieVal.startsWith('.ROBLOSECURITY=')) {
+                cookieVal = `.ROBLOSECURITY=${cookieVal}`;
+            }
+            cdnHeaders['Cookie'] = cookieVal;
         }
 
-        const cdnRes = await fetch(`https://assetdelivery.roblox.com/v1/asset/?id=${assetId}`, {
-            headers: cdnHeaders
+        // Fetch with manual redirect handling to preserve Cookie header on redirect
+        let cdnRes = await fetch(`https://assetdelivery.roblox.com/v1/asset/?id=${assetId}`, {
+            headers: cdnHeaders,
+            redirect: 'manual'
         });
 
+        if (cdnRes.status === 301 || cdnRes.status === 302) {
+            const redirectUrl = cdnRes.headers.get('location');
+            if (redirectUrl) {
+                cdnRes = await fetch(redirectUrl, { headers: cdnHeaders });
+            }
+        }
+
+        // Fallback endpoint if assetdelivery returned non-OK status
         if (!cdnRes.ok) {
-            return res.status(400).json({ error: `Failed to download audio from Roblox CDN (Status ${cdnRes.status})` });
+            const fallbackRes = await fetch(`https://www.roblox.com/asset/?id=${assetId}`, {
+                headers: cdnHeaders,
+                redirect: 'follow'
+            });
+            if (fallbackRes.ok) {
+                cdnRes = fallbackRes;
+            } else {
+                return res.status(400).json({ 
+                    error: `Failed to download audio from Roblox CDN (Status ${cdnRes.status})`,
+                    hasCookie: Boolean(process.env.ROBLOX_COOKIE),
+                    details: `Init status: ${cdnRes.status}, Fallback status: ${fallbackRes.status}`
+                });
+            }
         }
 
         const audioBuffer = await cdnRes.buffer();
