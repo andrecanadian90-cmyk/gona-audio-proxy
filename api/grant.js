@@ -18,9 +18,7 @@ module.exports = async (req, res) => {
             return res.status(400).json({ error: 'Missing parameters: assetId, universeId' });
         }
 
-        console.log(`[GrantProxy] Testing all Roblox Permission APIs for Asset #${assetId} & Universe #${universeId}...`);
-
-        const attempts = [];
+        console.log(`[GrantProxy] Processing Asset #${assetId} permission for Universe #${universeId}...`);
 
         const headers = {
             'Content-Type': 'application/json',
@@ -36,42 +34,63 @@ module.exports = async (req, res) => {
         }
 
         const payloadRequests = JSON.stringify({
-            requests: [{ action: "GrantUse", subjectType: "Universe", subjectId: Number(universeId) }]
-        });
-
-        const payloadSingle = JSON.stringify({
-            action: "GrantUse", subjectType: "Universe", subjectId: Number(universeId)
-        });
-
-        const testEndpoints = [
-            { name: "asset-permissions-api PATCH", url: `https://apis.roblox.com/asset-permissions-api/v1/assets/${assetId}/permissions`, method: 'PATCH', body: payloadRequests },
-            { name: "asset-permissions-api POST", url: `https://apis.roblox.com/asset-permissions-api/v1/assets/${assetId}/permissions`, method: 'POST', body: payloadSingle },
-            { name: "itemconfiguration POST", url: `https://itemconfiguration.roblox.com/v1/assets/${assetId}/permissions`, method: 'POST', body: payloadSingle },
-            { name: "publish POST", url: `https://publish.roblox.com/v1/assets/${assetId}/permissions`, method: 'POST', body: payloadSingle },
-            { name: "apis assets/v1 POST", url: `https://apis.roblox.com/assets/v1/assets/${assetId}/permissions`, method: 'POST', body: payloadSingle },
-            { name: "universe-permissions POST", url: `https://apis.roblox.com/universe-permissions/v1/experiences/${universeId}/assets/${assetId}`, method: 'POST', body: payloadSingle }
-        ];
-
-        for (const ep of testEndpoints) {
-            try {
-                const r = await fetch(ep.url, {
-                    method: ep.method,
-                    headers: headers,
-                    body: ep.body
-                });
-                const d = await r.json().catch(() => ({}));
-                attempts.push({ ep: ep.name, status: r.status, data: d });
-                if (r.ok) {
-                    console.log(`[GrantProxy] SUCCESS via ${ep.name}!`, d);
-                    return res.status(200).json({ success: true, endpoint: ep.name, data: d });
+            requests: [
+                {
+                    action: "GrantUse",
+                    subjectType: "Universe",
+                    subjectId: Number(universeId)
                 }
-            } catch (err) {
-                attempts.push({ ep: ep.name, error: err.message });
-            }
+            ]
+        });
+
+        const targetUrl = `https://apis.roblox.com/asset-permissions-api/v1/assets/${assetId}/permissions`;
+
+        // Step 1: Initial request to fetch Roblox X-CSRF-Token
+        console.log('[GrantProxy] Step 1: Fetching Roblox X-CSRF-Token from asset-permissions-api...');
+        let initialRes = await fetch(targetUrl, {
+            method: 'PATCH',
+            headers: headers,
+            body: payloadRequests
+        });
+
+        let csrfToken = initialRes.headers.get('x-csrf-token');
+
+        if (!csrfToken && initialRes.status === 403) {
+            // Also check casing variations if header getter didn't find it
+            csrfToken = initialRes.headers.get('X-CSRF-TOKEN') || initialRes.headers.get('X-Csrf-Token');
         }
 
-        console.error('[GrantProxy] All Permission Endpoints Failed:', attempts);
-        return res.status(400).json({ error: 'All Permission Endpoints Failed', attempts });
+        console.log('[GrantProxy] CSRF Token Fetched:', csrfToken ? 'YES (Valid)' : 'NO');
+
+        if (csrfToken) {
+            headers['x-csrf-token'] = csrfToken;
+
+            // Step 2: Re-send PATCH request with valid x-csrf-token
+            console.log('[GrantProxy] Step 2: Re-sending PATCH request with valid x-csrf-token...');
+            const grantRes = await fetch(targetUrl, {
+                method: 'PATCH',
+                headers: headers,
+                body: payloadRequests
+            });
+
+            const grantData = await grantRes.json().catch(() => ({}));
+
+            console.log('[GrantProxy] Grant Response Status:', grantRes.status, grantData);
+
+            if (grantRes.ok) {
+                console.log('[GrantProxy] ✅ UNIVERSE PERMISSION GRANTED SUCCESSFULLY!');
+                return res.status(200).json({ success: true, message: 'Universe Permission Granted Successfully!', data: grantData });
+            } else {
+                return res.status(grantRes.status).json({ error: grantData.message || 'Roblox Grant Failed', details: grantData });
+            }
+        } else {
+            const initialData = await initialRes.json().catch(() => ({}));
+            return res.status(initialRes.status).json({
+                error: 'Failed to obtain x-csrf-token from Roblox API',
+                status: initialRes.status,
+                details: initialData
+            });
+        }
 
     } catch (err) {
         console.error('[GrantProxy] Internal Exception:', err);
