@@ -26,8 +26,16 @@ module.exports = async (req, res) => {
 
         console.log(`[Proxy] Processing Auto-Clone for Asset #${assetId} to Group #${groupId}...`);
 
-        // 1. Download stream audio from Roblox Asset Delivery CDN
-        const cdnRes = await fetch(`https://assetdelivery.roblox.com/v1/asset/?id=${assetId}`);
+        // 1. Download stream audio from Roblox Asset Delivery CDN (using Cookie Auth if provided)
+        const cdnHeaders = {};
+        if (process.env.ROBLOX_COOKIE) {
+            cdnHeaders['Cookie'] = `.ROBLOSECURITY=${process.env.ROBLOX_COOKIE}`;
+        }
+
+        const cdnRes = await fetch(`https://assetdelivery.roblox.com/v1/asset/?id=${assetId}`, {
+            headers: cdnHeaders
+        });
+
         if (!cdnRes.ok) {
             return res.status(400).json({ error: `Failed to download audio from Roblox CDN (Status ${cdnRes.status})` });
         }
