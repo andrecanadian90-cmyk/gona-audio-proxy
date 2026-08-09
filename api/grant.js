@@ -1,28 +1,22 @@
 // G0NA Asset Permission Grant Proxy for Vercel Serverless
 const fetch = require('node-fetch');
 
-async function getRobloxCsrfToken(headers) {
+// Helper to fetch valid X-CSRF-Token using Cookie only
+async function fetchCsrfToken(cookieHeader) {
     try {
         const res = await fetch('https://auth.roblox.com/v2/login', {
             method: 'POST',
-            headers: headers,
+            headers: {
+                'Cookie': cookieHeader,
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+            },
             body: '{}'
         });
-        const token = res.headers.get('x-csrf-token') || res.headers.get('X-CSRF-TOKEN');
-        if (token) return token;
-    } catch (e) {}
-
-    try {
-        const res = await fetch('https://apis.roblox.com/asset-permissions-api/v1/assets/permissions', {
-            method: 'POST',
-            headers: headers,
-            body: '{}'
-        });
-        const token = res.headers.get('x-csrf-token') || res.headers.get('X-CSRF-TOKEN');
-        if (token) return token;
-    } catch (e) {}
-
-    return null;
+        return res.headers.get('x-csrf-token') || res.headers.get('X-CSRF-TOKEN');
+    } catch (e) {
+        return null;
+    }
 }
 
 module.exports = async (req, res) => {
@@ -42,92 +36,128 @@ module.exports = async (req, res) => {
             return res.status(400).json({ error: 'Missing parameters: assetId, universeId' });
         }
 
-        console.log(`[GrantProxy] Granting Asset #${assetId} use to Universe #${universeId}...`);
-
-        const baseHeaders = {
-            'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        };
-
-        if (apiKey) baseHeaders['x-api-key'] = apiKey;
-
-        if (process.env.ROBLOX_COOKIE) {
-            let cVal = process.env.ROBLOX_COOKIE.trim();
-            if (!cVal.startsWith('.ROBLOSECURITY=')) cVal = `.ROBLOSECURITY=${cVal}`;
-            baseHeaders['Cookie'] = cVal;
-        }
-
-        const csrfToken = await getRobloxCsrfToken(baseHeaders);
-        if (csrfToken) {
-            baseHeaders['x-csrf-token'] = csrfToken;
-        }
-
         const numAssetId = Number(assetId);
         const numUniverseId = Number(universeId);
+        console.log(`[GrantProxy] Processing Grant for Asset #${numAssetId} to Universe #${numUniverseId}...`);
+
         const attempts = [];
 
-        // Endpoint 1: Batch /v1/assets/permissions (POST)
-        try {
-            const ep1 = 'https://apis.roblox.com/asset-permissions-api/v1/assets/permissions';
-            const r1 = await fetch(ep1, {
-                method: 'POST',
-                headers: baseHeaders,
-                body: JSON.stringify({
-                    requests: [{ assetId: numAssetId, action: "GrantUse", subjectType: "Universe", subjectId: numUniverseId }]
-                })
-            });
-            const d1 = await r1.json().catch(() => ({}));
-            attempts.push({ ep: 'Batch POST /v1/assets/permissions', status: r1.status, data: d1 });
-            if (r1.ok) return res.status(200).json({ success: true, ep: 'Batch POST', data: d1 });
-        } catch (e) { attempts.push({ ep: 'Batch POST', error: e.message }); }
+        // -------------------------------------------------------------
+        // APPROACH 1: Pure Open Cloud API Key (NO Cookie, NO CSRF)
+        // -------------------------------------------------------------
+        if (apiKey) {
+            console.log('[GrantProxy] Trying Approach 1: Pure Open Cloud API Key...');
+            const openCloudHeaders = {
+                'x-api-key': apiKey,
+                'Content-Type': 'application/json',
+                'User-Agent': 'Roblox/WinInet'
+            };
 
-        // Endpoint 2: Batch /v1/assets/permissions (PATCH)
-        try {
-            const ep2 = 'https://apis.roblox.com/asset-permissions-api/v1/assets/permissions';
-            const r2 = await fetch(ep2, {
-                method: 'PATCH',
-                headers: baseHeaders,
-                body: JSON.stringify({
-                    requests: [{ assetId: numAssetId, action: "GrantUse", subjectType: "Universe", subjectId: numUniverseId }]
-                })
-            });
-            const d2 = await r2.json().catch(() => ({}));
-            attempts.push({ ep: 'Batch PATCH /v1/assets/permissions', status: r2.status, data: d2 });
-            if (r2.ok) return res.status(200).json({ success: true, ep: 'Batch PATCH', data: d2 });
-        } catch (e) { attempts.push({ ep: 'Batch PATCH', error: e.message }); }
+            const openCloudEndpoints = [
+                {
+                    name: 'OpenCloud v1 PATCH (apis.roblox.com/assets/v1/assets/{id}/permissions)',
+                    url: `https://apis.roblox.com/assets/v1/assets/${numAssetId}/permissions`,
+                    method: 'PATCH',
+                    body: JSON.stringify({
+                        requests: [{ action: "GrantUse", subjectType: "Universe", subjectId: String(numUniverseId) }]
+                    })
+                },
+                {
+                    name: 'OpenCloud v1 POST (apis.roblox.com/assets/v1/assets/{id}/permissions)',
+                    url: `https://apis.roblox.com/assets/v1/assets/${numAssetId}/permissions`,
+                    method: 'POST',
+                    body: JSON.stringify({
+                        action: "GrantUse", subjectType: "Universe", subjectId: String(numUniverseId)
+                    })
+                },
+                {
+                    name: 'OpenCloud asset-permissions PATCH (apis.roblox.com/asset-permissions/v1/assets/{id}/permissions)',
+                    url: `https://apis.roblox.com/asset-permissions/v1/assets/${numAssetId}/permissions`,
+                    method: 'PATCH',
+                    body: JSON.stringify({
+                        requests: [{ action: "GrantUse", subjectType: "Universe", subjectId: String(numUniverseId) }]
+                    })
+                }
+            ];
 
-        // Endpoint 3: Direct /v1/assets/{id}/permissions (POST)
-        try {
-            const ep3 = `https://apis.roblox.com/asset-permissions-api/v1/assets/${numAssetId}/permissions`;
-            const r3 = await fetch(ep3, {
-                method: 'POST',
-                headers: baseHeaders,
-                body: JSON.stringify({
-                    requests: [{ action: "GrantUse", subjectType: "Universe", subjectId: numUniverseId }]
-                })
-            });
-            const d3 = await r3.json().catch(() => ({}));
-            attempts.push({ ep: 'Direct POST /v1/assets/{id}/permissions', status: r3.status, data: d3 });
-            if (r3.ok) return res.status(200).json({ success: true, ep: 'Direct POST', data: d3 });
-        } catch (e) { attempts.push({ ep: 'Direct POST', error: e.message }); }
+            for (const ep of openCloudEndpoints) {
+                try {
+                    const r = await fetch(ep.url, { method: ep.method, headers: openCloudHeaders, body: ep.body });
+                    const d = await r.json().catch(() => ({}));
+                    attempts.push({ mode: 'OpenCloudKey', ep: ep.name, status: r.status, data: d });
+                    if (r.ok) {
+                        console.log(`[GrantProxy] ✅ SUCCESS via OpenCloud (${ep.name})!`);
+                        return res.status(200).json({ success: true, mode: 'OpenCloudKey', ep: ep.name, data: d });
+                    }
+                } catch (e) { attempts.push({ mode: 'OpenCloudKey', ep: ep.name, error: e.message }); }
+            }
+        }
 
-        // Endpoint 4: Direct /v1/assets/{id}/permissions (PATCH)
-        try {
-            const ep4 = `https://apis.roblox.com/asset-permissions-api/v1/assets/${numAssetId}/permissions`;
-            const r4 = await fetch(ep4, {
-                method: 'PATCH',
-                headers: baseHeaders,
-                body: JSON.stringify({
-                    requests: [{ action: "GrantUse", subjectType: "Universe", subjectId: numUniverseId }]
-                })
-            });
-            const d4 = await r4.json().catch(() => ({}));
-            attempts.push({ ep: 'Direct PATCH /v1/assets/{id}/permissions', status: r4.status, data: d4 });
-            if (r4.ok) return res.status(200).json({ success: true, ep: 'Direct PATCH', data: d4 });
-        } catch (e) { attempts.push({ ep: 'Direct PATCH', error: e.message }); }
+        // -------------------------------------------------------------
+        // APPROACH 2: Pure Web Cookie Auth (NO x-api-key, WITH CSRF)
+        // -------------------------------------------------------------
+        if (process.env.ROBLOX_COOKIE) {
+            console.log('[GrantProxy] Trying Approach 2: Pure Cookie Auth...');
+            let cookieVal = process.env.ROBLOX_COOKIE.trim();
+            if (!cookieVal.startsWith('.ROBLOSECURITY=')) {
+                cookieVal = `.ROBLOSECURITY=${cookieVal}`;
+            }
 
-        console.error('[GrantProxy] All Permission Endpoints Failed:', attempts);
-        return res.status(400).json({ error: 'Roblox Grant Failed', hasCsrfToken: Boolean(csrfToken), attempts });
+            const csrfToken = await fetchCsrfToken(cookieVal);
+            console.log('[GrantProxy] Pure Cookie CSRF Token:', csrfToken ? 'OBTAINED' : 'FAILED');
+
+            const cookieHeaders = {
+                'Cookie': cookieVal,
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+            };
+
+            if (csrfToken) {
+                cookieHeaders['x-csrf-token'] = csrfToken;
+            }
+
+            const webEndpoints = [
+                {
+                    name: 'Web asset-permissions-api PATCH (apis.roblox.com/asset-permissions-api/v1/assets/{id}/permissions)',
+                    url: `https://apis.roblox.com/asset-permissions-api/v1/assets/${numAssetId}/permissions`,
+                    method: 'PATCH',
+                    body: JSON.stringify({
+                        requests: [{ action: "GrantUse", subjectType: "Universe", subjectId: numUniverseId }]
+                    })
+                },
+                {
+                    name: 'Web Batch asset-permissions-api POST (apis.roblox.com/asset-permissions-api/v1/assets/permissions)',
+                    url: `https://apis.roblox.com/asset-permissions-api/v1/assets/permissions`,
+                    method: 'POST',
+                    body: JSON.stringify({
+                        requests: [{ assetId: numAssetId, action: "GrantUse", subjectType: "Universe", subjectId: numUniverseId }]
+                    })
+                },
+                {
+                    name: 'Web Batch asset-permissions-api PATCH (apis.roblox.com/asset-permissions-api/v1/assets/permissions)',
+                    url: `https://apis.roblox.com/asset-permissions-api/v1/assets/permissions`,
+                    method: 'PATCH',
+                    body: JSON.stringify({
+                        requests: [{ assetId: numAssetId, action: "GrantUse", subjectType: "Universe", subjectId: numUniverseId }]
+                    })
+                }
+            ];
+
+            for (const ep of webEndpoints) {
+                try {
+                    const r = await fetch(ep.url, { method: ep.method, headers: cookieHeaders, body: ep.body });
+                    const d = await r.json().catch(() => ({}));
+                    attempts.push({ mode: 'CookieWeb', ep: ep.name, status: r.status, data: d });
+                    if (r.ok) {
+                        console.log(`[GrantProxy] ✅ SUCCESS via CookieWeb (${ep.name})!`);
+                        return res.status(200).json({ success: true, mode: 'CookieWeb', ep: ep.name, data: d });
+                    }
+                } catch (e) { attempts.push({ mode: 'CookieWeb', ep: ep.name, error: e.message }); }
+            }
+        }
+
+        console.error('[GrantProxy] All Approaches Failed:', attempts);
+        return res.status(400).json({ error: 'Roblox Grant Failed', attempts });
 
     } catch (err) {
         console.error('[GrantProxy] Internal Exception:', err);
