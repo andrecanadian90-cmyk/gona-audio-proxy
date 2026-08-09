@@ -18,85 +18,60 @@ module.exports = async (req, res) => {
             return res.status(400).json({ error: 'Missing parameters: assetId, universeId' });
         }
 
-        console.log(`[GrantProxy] Granting Universe #${universeId} use for Asset #${assetId}...`);
+        console.log(`[GrantProxy] Testing all Roblox Permission APIs for Asset #${assetId} & Universe #${universeId}...`);
 
         const attempts = [];
 
-        // Build headers for Cookie Auth and API Key Auth
         const headers = {
             'Content-Type': 'application/json',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         };
 
-        if (apiKey) {
-            headers['x-api-key'] = apiKey;
-        }
+        if (apiKey) headers['x-api-key'] = apiKey;
 
         if (process.env.ROBLOX_COOKIE) {
-            let cookieVal = process.env.ROBLOX_COOKIE.trim();
-            if (!cookieVal.startsWith('.ROBLOSECURITY=')) {
-                cookieVal = `.ROBLOSECURITY=${cookieVal}`;
-            }
-            headers['Cookie'] = cookieVal;
+            let cVal = process.env.ROBLOX_COOKIE.trim();
+            if (!cVal.startsWith('.ROBLOSECURITY=')) cVal = `.ROBLOSECURITY=${cVal}`;
+            headers['Cookie'] = cVal;
         }
 
-        const grantPayload = {
-            requests: [
-                {
-                    action: "GrantUse",
-                    subjectType: "Universe",
-                    subjectId: Number(universeId)
+        const payloadRequests = JSON.stringify({
+            requests: [{ action: "GrantUse", subjectType: "Universe", subjectId: Number(universeId) }]
+        });
+
+        const payloadSingle = JSON.stringify({
+            action: "GrantUse", subjectType: "Universe", subjectId: Number(universeId)
+        });
+
+        const testEndpoints = [
+            { name: "asset-permissions-api PATCH", url: `https://apis.roblox.com/asset-permissions-api/v1/assets/${assetId}/permissions`, method: 'PATCH', body: payloadRequests },
+            { name: "asset-permissions-api POST", url: `https://apis.roblox.com/asset-permissions-api/v1/assets/${assetId}/permissions`, method: 'POST', body: payloadSingle },
+            { name: "itemconfiguration POST", url: `https://itemconfiguration.roblox.com/v1/assets/${assetId}/permissions`, method: 'POST', body: payloadSingle },
+            { name: "publish POST", url: `https://publish.roblox.com/v1/assets/${assetId}/permissions`, method: 'POST', body: payloadSingle },
+            { name: "apis assets/v1 POST", url: `https://apis.roblox.com/assets/v1/assets/${assetId}/permissions`, method: 'POST', body: payloadSingle },
+            { name: "universe-permissions POST", url: `https://apis.roblox.com/universe-permissions/v1/experiences/${universeId}/assets/${assetId}`, method: 'POST', body: payloadSingle }
+        ];
+
+        for (const ep of testEndpoints) {
+            try {
+                const r = await fetch(ep.url, {
+                    method: ep.method,
+                    headers: headers,
+                    body: ep.body
+                });
+                const d = await r.json().catch(() => ({}));
+                attempts.push({ ep: ep.name, status: r.status, data: d });
+                if (r.ok) {
+                    console.log(`[GrantProxy] SUCCESS via ${ep.name}!`, d);
+                    return res.status(200).json({ success: true, endpoint: ep.name, data: d });
                 }
-            ]
-        };
-
-        // Method 1: assetpermissions.roblox.com POST (Official Dashboard Web Permission API)
-        try {
-            const r1 = await fetch(`https://assetpermissions.roblox.com/v1/assets/${assetId}/permissions`, {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify(grantPayload)
-            });
-            const d1 = await r1.json().catch(() => ({}));
-            attempts.push({ method: 'assetpermissions POST', status: r1.status, data: d1 });
-            if (r1.ok) {
-                console.log('[GrantProxy] Success via assetpermissions POST!');
-                return res.status(200).json({ success: true, method: 'assetpermissions POST', data: d1 });
+            } catch (err) {
+                attempts.push({ ep: ep.name, error: err.message });
             }
-        } catch (e) { attempts.push({ method: 'assetpermissions POST', error: e.message }); }
+        }
 
-        // Method 2: develop.roblox.com POST (Legacy Developer Permission API)
-        try {
-            const r2 = await fetch(`https://develop.roblox.com/v1/assets/${assetId}/permissions`, {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify(grantPayload)
-            });
-            const d2 = await r2.json().catch(() => ({}));
-            attempts.push({ method: 'develop POST', status: r2.status, data: d2 });
-            if (r2.ok) {
-                console.log('[GrantProxy] Success via develop POST!');
-                return res.status(200).json({ success: true, method: 'develop POST', data: d2 });
-            }
-        } catch (e) { attempts.push({ method: 'develop POST', error: e.message }); }
-
-        // Method 3: apis.roblox.com/asset-permissions/v1/assets/{id}/permissions PATCH
-        try {
-            const r3 = await fetch(`https://apis.roblox.com/asset-permissions/v1/assets/${assetId}/permissions`, {
-                method: 'PATCH',
-                headers: headers,
-                body: JSON.stringify(grantPayload)
-            });
-            const d3 = await r3.json().catch(() => ({}));
-            attempts.push({ method: 'apis PATCH', status: r3.status, data: d3 });
-            if (r3.ok) {
-                console.log('[GrantProxy] Success via apis PATCH!');
-                return res.status(200).json({ success: true, method: 'apis PATCH', data: d3 });
-            }
-        } catch (e) { attempts.push({ method: 'apis PATCH', error: e.message }); }
-
-        console.error('[GrantProxy] All Grant Endpoints Failed:', attempts);
-        return res.status(400).json({ error: 'Roblox Grant Failed across all endpoints', attempts });
+        console.error('[GrantProxy] All Permission Endpoints Failed:', attempts);
+        return res.status(400).json({ error: 'All Permission Endpoints Failed', attempts });
 
     } catch (err) {
         console.error('[GrantProxy] Internal Exception:', err);
