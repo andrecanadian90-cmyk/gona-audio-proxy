@@ -3,17 +3,17 @@ const fetch = require('node-fetch');
 
 async function getRobloxCsrfToken(headers) {
     try {
-        const res = await fetch('https://apis.roblox.com/asset-permissions-api/v1/assets/1/permissions', {
+        const res = await fetch('https://auth.roblox.com/v2/login', {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify({ requests: [] })
+            body: '{}'
         });
-        const token = res.headers.get('x-csrf-token') || res.headers.get('X-CSRF-TOKEN') || res.headers.get('x-csrf-token');
+        const token = res.headers.get('x-csrf-token') || res.headers.get('X-CSRF-TOKEN');
         if (token) return token;
     } catch (e) {}
 
     try {
-        const res = await fetch('https://auth.roblox.com/v2/login', {
+        const res = await fetch('https://apis.roblox.com/asset-permissions-api/v1/assets/permissions', {
             method: 'POST',
             headers: headers,
             body: '{}'
@@ -57,80 +57,77 @@ module.exports = async (req, res) => {
             baseHeaders['Cookie'] = cVal;
         }
 
-        // Obtain CSRF Token
         const csrfToken = await getRobloxCsrfToken(baseHeaders);
-        console.log('[GrantProxy] Fetched CSRF Token:', csrfToken ? 'SUCCESS' : 'NONE');
-
         if (csrfToken) {
             baseHeaders['x-csrf-token'] = csrfToken;
         }
 
-        const targetUrl = `https://apis.roblox.com/asset-permissions-api/v1/assets/${assetId}/permissions`;
-        const payloadStr = JSON.stringify({
-            requests: [
-                {
-                    subjectType: "Universe",
-                    subjectId: Number(universeId),
-                    action: "GrantUse"
-                }
-            ]
-        });
+        const numAssetId = Number(assetId);
+        const numUniverseId = Number(universeId);
+        const attempts = [];
 
-        // Attempt 1: PATCH with requests array
-        console.log('[GrantProxy] Trying Attempt 1: PATCH requests array...');
-        let grantRes = await fetch(targetUrl, {
-            method: 'PATCH',
-            headers: baseHeaders,
-            body: payloadStr
-        });
+        // Endpoint 1: Batch /v1/assets/permissions (POST)
+        try {
+            const ep1 = 'https://apis.roblox.com/asset-permissions-api/v1/assets/permissions';
+            const r1 = await fetch(ep1, {
+                method: 'POST',
+                headers: baseHeaders,
+                body: JSON.stringify({
+                    requests: [{ assetId: numAssetId, action: "GrantUse", subjectType: "Universe", subjectId: numUniverseId }]
+                })
+            });
+            const d1 = await r1.json().catch(() => ({}));
+            attempts.push({ ep: 'Batch POST /v1/assets/permissions', status: r1.status, data: d1 });
+            if (r1.ok) return res.status(200).json({ success: true, ep: 'Batch POST', data: d1 });
+        } catch (e) { attempts.push({ ep: 'Batch POST', error: e.message }); }
 
-        let grantData = await grantRes.json().catch(() => ({}));
-        console.log('[GrantProxy] Attempt 1 Status:', grantRes.status, grantData);
+        // Endpoint 2: Batch /v1/assets/permissions (PATCH)
+        try {
+            const ep2 = 'https://apis.roblox.com/asset-permissions-api/v1/assets/permissions';
+            const r2 = await fetch(ep2, {
+                method: 'PATCH',
+                headers: baseHeaders,
+                body: JSON.stringify({
+                    requests: [{ assetId: numAssetId, action: "GrantUse", subjectType: "Universe", subjectId: numUniverseId }]
+                })
+            });
+            const d2 = await r2.json().catch(() => ({}));
+            attempts.push({ ep: 'Batch PATCH /v1/assets/permissions', status: r2.status, data: d2 });
+            if (r2.ok) return res.status(200).json({ success: true, ep: 'Batch PATCH', data: d2 });
+        } catch (e) { attempts.push({ ep: 'Batch PATCH', error: e.message }); }
 
-        if (grantRes.ok) {
-            return res.status(200).json({ success: true, method: 'PATCH requests', data: grantData });
-        }
+        // Endpoint 3: Direct /v1/assets/{id}/permissions (POST)
+        try {
+            const ep3 = `https://apis.roblox.com/asset-permissions-api/v1/assets/${numAssetId}/permissions`;
+            const r3 = await fetch(ep3, {
+                method: 'POST',
+                headers: baseHeaders,
+                body: JSON.stringify({
+                    requests: [{ action: "GrantUse", subjectType: "Universe", subjectId: numUniverseId }]
+                })
+            });
+            const d3 = await r3.json().catch(() => ({}));
+            attempts.push({ ep: 'Direct POST /v1/assets/{id}/permissions', status: r3.status, data: d3 });
+            if (r3.ok) return res.status(200).json({ success: true, ep: 'Direct POST', data: d3 });
+        } catch (e) { attempts.push({ ep: 'Direct POST', error: e.message }); }
 
-        // Attempt 2: POST with requests array
-        console.log('[GrantProxy] Trying Attempt 2: POST requests array...');
-        grantRes = await fetch(targetUrl, {
-            method: 'POST',
-            headers: baseHeaders,
-            body: payloadStr
-        });
+        // Endpoint 4: Direct /v1/assets/{id}/permissions (PATCH)
+        try {
+            const ep4 = `https://apis.roblox.com/asset-permissions-api/v1/assets/${numAssetId}/permissions`;
+            const r4 = await fetch(ep4, {
+                method: 'PATCH',
+                headers: baseHeaders,
+                body: JSON.stringify({
+                    requests: [{ action: "GrantUse", subjectType: "Universe", subjectId: numUniverseId }]
+                })
+            });
+            const d4 = await r4.json().catch(() => ({}));
+            attempts.push({ ep: 'Direct PATCH /v1/assets/{id}/permissions', status: r4.status, data: d4 });
+            if (r4.ok) return res.status(200).json({ success: true, ep: 'Direct PATCH', data: d4 });
+        } catch (e) { attempts.push({ ep: 'Direct PATCH', error: e.message }); }
 
-        grantData = await grantRes.json().catch(() => ({}));
-        console.log('[GrantProxy] Attempt 2 Status:', grantRes.status, grantData);
-
-        if (grantRes.ok) {
-            return res.status(200).json({ success: true, method: 'POST requests', data: grantData });
-        }
-
-        // Attempt 3: POST with single object
-        console.log('[GrantProxy] Trying Attempt 3: POST single object...');
-        grantRes = await fetch(targetUrl, {
-            method: 'POST',
-            headers: baseHeaders,
-            body: JSON.stringify({
-                subjectType: "Universe",
-                subjectId: Number(universeId),
-                action: "GrantUse"
-            })
-        });
-
-        grantData = await grantRes.json().catch(() => ({}));
-        console.log('[GrantProxy] Attempt 3 Status:', grantRes.status, grantData);
-
-        if (grantRes.ok) {
-            return res.status(200).json({ success: true, method: 'POST single', data: grantData });
-        }
-
-        return res.status(grantRes.status).json({
-            error: 'Roblox Grant Failed',
-            hasCsrfToken: Boolean(csrfToken),
-            status: grantRes.status,
-            details: grantData
-        });
+        console.error('[GrantProxy] All Permission Endpoints Failed:', attempts);
+        return res.status(400).json({ error: 'Roblox Grant Failed', hasCsrfToken: Boolean(csrfToken), attempts });
 
     } catch (err) {
         console.error('[GrantProxy] Internal Exception:', err);
